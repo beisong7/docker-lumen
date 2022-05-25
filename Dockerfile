@@ -1,51 +1,69 @@
-FROM alpine:3.13
+FROM php:7.4-apache
 
-# for laravel lumen run smoothly
-RUN apk --no-cache add \
-php7 \
-php7-fpm \
-php7-pdo \
-php7-mbstring \
-php7-openssl
+RUN apt-get update
 
-# for our code run smoothly
-RUN apk --no-chace add \
-php7-json \
-php7-dom \
-curl \
-php7-curl
+# WORKDIR /app
 
-# for swagger run smoothly
-RUN apk --no-cache add \
-php7-tokenizer
+RUN apt-get install -y \
+    git \
+    zip \
+    curl \
+    sudo \
+    unzip \
+    libicu-dev \
+    libbz2-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libmcrypt-dev \
+    libreadline-dev \
+    libfreetype6-dev \
+    g++
 
-# for composer & our project depency run smoothly
-RUN apk --no-cache add \
-php7-phar \
-php7-xml \
-php7-xmlwriter
+# 2. apache configs + document root
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
+RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
 
-# if need composer to update plugin / vendor used
-RUN php7 -r "copy('http://getcomposer.org/installer', 'composer-setup.php');" && \
-php7 composer-setup.php --install-dir=/usr/bin --filename=composer && \
-php7 -r "unlink('composer-setup.php');"
+# 3. mod_rewrite for URL rewrite and mod_headers for .htaccess extra headers like Access-Control-Allow-Origin-
+RUN a2enmod rewrite headers
 
-# copy all of the file in folder to /src
-#COPY . /src
-#WORKDIR /src
+# 4. start with base php config, then add extensions
+RUN mv "$PHP_INI_DIR/php.ini-development" "$PHP_INI_DIR/php.ini"
 
-#RUN composer update
+RUN docker-php-ext-install \
+    gd \
+	bz2 \
+	exif \
+    intl \
+	iconv \
+	mysqli \
+    bcmath \
+	gettext \
+    opcache \
+	mbstring \
+    calendar \
+    pdo_mysql \
+    zip
 
-# stage 2 - build the final image and copy the react build files
-FROM nginx:1.17.8-alpine
+# 4.1 - configure GD for image convertion/image intervention
+RUN docker-php-ext-configure gd --with-freetype-dir=/usr/include/ --with-jpeg-dir=/usr/include/ \
+    && docker-php-ext-install gd
 
-# copy all of the file in folder to /src
-COPY . /usr/share/nginx/html
-WORKDIR /usr/share/nginx/html
+# 5. composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-RUN composer update
+# 6. we need a user with the same UID/GID with host user
+# so when we execute CLI commands, all the host file's ownership remains intact
+# otherwise command from inside container will create root-owned files and directories
+ARG uid
 
-RUN rm /etc/nginx/conf.d/default.conf
-COPY nginx.conf /etc/nginx/conf.d
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+RUN useradd -G www-data,root -u $uid -d /home/devuser devuser
+RUN mkdir -p /home/devuser/.composer && \
+    chown -R devuser:devuser /home/devuser
+#RUN chown -R devuser:devuser /var/www/html
+#RUN chmod -R 777 /var/www/test/public_html
+
+COPY . /var/www/html
+WORKDIR /var/www/html
+
+RUN composer install
